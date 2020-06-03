@@ -1,4 +1,5 @@
 //CPU Task parallelism header-only 
+#pragma once
 #include <unordered_map>
 #include <functional>
 #include <atomic>
