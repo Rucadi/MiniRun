@@ -40,7 +40,7 @@ The example shows the case of a block of a matmul which uses MiniRun:
 			for (int k = 0; k < block; ++k)
 				for (int i = 0; i < block; ++i)
 					for (int j = 0; j < block; ++j)
-					c[i*BSIZE + j] += a[i*block+ k] * b[k*block+ j];
+					c[i*block + j] += a[i*block+ k] * b[k*block+ j];
 		}, 	MiniRun::deps(a,b), MiniRun::deps(c));
 	}
 
