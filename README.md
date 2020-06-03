@@ -1,6 +1,6 @@
 # MiniRun
 
-MiniRun is a task-based runtime that follows OpenMP/OmpSs task model. The intention of this runtime is to demonstrate how a little runtime can be done, and to give task-support to projects that run in  multi-core systems but don't have access to OpenMP or OmpSs task-based runtimes, like VStudio compiler for Windows.
+MiniRun is a task-based runtime that follows OpenMP/OmpSs task model. The intention of this runtime is to demonstrate how a little runtime can be done, and to give task-support to projects that run in  multi-core systems but don't have access to OpenMP or OmpSs task-based runtimes, like VStudio compiler for Windows, wich doesn't support tasks.
 
 There is no intention to support all the features of the two previous models, and the aim of this project is simplicity.  
 
