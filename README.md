@@ -22,7 +22,7 @@ Creating a miniruntime:
 When creating a miniruntime, you can decide the number of threads you want to use:
 
 
-    #include  "minirun.hpp"
+    #include  "MiniRun.hpp"
 	
 	MiniRun runtime();//Will use number_of_cpus-2 threads
 	MiniRun runtime2(2);//Will use 2 threads
