@@ -1,216 +1,322 @@
 //CPU Task parallelism header-only 
 #pragma once
-#include <unordered_map>
+
+#include <thread>
 #include <functional>
 #include <atomic>
-#include <thread>
-#include <queue>
-#include <mutex>
 
+#include <unordered_map>
+#include <list>
+#include <deque>
+#include <queue>
 
 class MiniRun
 {
-   
-    struct sentinel_access_type_counter
-    {
-        int in;
-        int out;
+    using depend_limit = uint32_t;
+    struct Task;
+    struct sentinel_access_type_counter;
+    class SpinLock {
+        std::atomic_flag locked = ATOMIC_FLAG_INIT ;
+    public:
+        inline void lock() {while (locked.test_and_set(std::memory_order_acquire)) { ; }        }
+        inline void unlock() {locked.clear(std::memory_order_release);}
     };
+    struct Task
+    {
+        MiniRun& targetRuntime;
+        std::vector<Task*> _taskNotify;
+        std::vector<sentinel_access_type_counter*> _increaseInCounterBeforeExecution;
+        std::vector<sentinel_access_type_counter*> _decreaseInCounterAfterExecution;
+        std::vector<sentinel_access_type_counter*> _processFinishOutAfterExecution;
 
-    std::unordered_map<uintptr_t, sentinel_access_type_counter> _sentinel_value;
-    std::mutex _blocked_tasks_lock, map_lock;
-    std::queue<std::function<bool()>> _blocked_task_queue;
+        std::function<void()> _fun;
+        bool _taskHasFinished;
+        depend_limit _countdownToRelease;
+        SpinLock countdownMtx;
 
-    std::atomic<int> _running_tasks;
 
-    class Thread_pool
+        Task(MiniRun& ref) : targetRuntime(ref), _taskHasFinished(false), _countdownToRelease(0)
+        {
+            _taskNotify.reserve(100);
+            _increaseInCounterBeforeExecution.reserve(100);
+            _decreaseInCounterAfterExecution.reserve(100);
+            _processFinishOutAfterExecution.reserve(100);
+        }
+
+        inline void reinitialize()
+        {
+            _taskNotify.clear();
+            _increaseInCounterBeforeExecution.clear();
+            _decreaseInCounterAfterExecution.clear();
+            _processFinishOutAfterExecution.clear();
+            _countdownToRelease = 0;
+            _taskHasFinished = false;
+        }
+        inline void operator()()
+        {
+            _fun();
+            onFinish();
+            reinitialize();
+            targetRuntime.releaseTask(this);
+            targetRuntime._running_tasks--;
+        }
+
+        inline void decreaseAfterExecution(sentinel_access_type_counter* sentinel)
+        {
+            _decreaseInCounterAfterExecution.push_back(sentinel);
+        }
+
+        inline void increaseBeforeExecution(sentinel_access_type_counter* sentinel)
+        {
+            _increaseInCounterBeforeExecution.push_back(sentinel);
+        }
+        
+        inline void outAfterExecution(sentinel_access_type_counter* sentinel)
+        {
+            _processFinishOutAfterExecution.push_back(sentinel);
+        }
+
+        inline void addNotify(Task* task)
+        {
+            //If a task tries to add a notify when this task has finished, decrease the countdown
+            //this is because that task has not seen 
+            if(!_taskHasFinished) _taskNotify.push_back(task);
+            else task->decreaseCountdown(); 
+        }
+
+        inline void increaseCountdown()
+        {
+            countdownMtx.lock();
+            _countdownToRelease++;
+            countdownMtx.unlock();
+        }
+
+        inline void decreaseCountdown()
+        {
+            countdownMtx.lock();
+            
+            _countdownToRelease--;
+            if(_countdownToRelease == 0)
+            {
+                for(auto sentinel_access:_increaseInCounterBeforeExecution) sentinel_access->increaseIn();
+                //enqueue into ready task queue
+                targetRuntime._pool.AddTask(this);
+            } 
+            countdownMtx.unlock();
+        }
+        inline void onFinish()
+        {
+            _taskHasFinished = true;
+            for(auto task     : _taskNotify) task->decreaseCountdown();
+            for(auto decrease : _decreaseInCounterAfterExecution) decrease->decreaseIn();
+            for(auto post : _processFinishOutAfterExecution) post->processSingleOut();
+        }
+    };
+    class ThreadPool
     {
         const int processor_count = std::thread::hardware_concurrency();
         bool alive;
-        std::queue<std::function<void()>> __runnable_tasks;
-        std::function<void()> _idle_function;
-        std::mutex _thread_pool_lock;
-
-        void Worker()
+        std::queue<Task*>     _runnable_tasks;
+        SpinLock              _thread_pool_spinlock;
+        inline void Worker()
         {
-            if(_thread_pool_lock.try_lock())
+            _thread_pool_spinlock.lock();
+            if(_runnable_tasks.size() > 0)
             {
-                if(__runnable_tasks.size() > 0)
-                {
-                    std::function<void()> task_to_run = std::move(__runnable_tasks.front());
-                    __runnable_tasks.pop();
-                    _thread_pool_lock.unlock();
-                    task_to_run();
-                }
-                else 
-                {
-                    _thread_pool_lock.unlock();
-                    _idle_function();
-                }
+                Task& task_to_run = *_runnable_tasks.front();
+                _runnable_tasks.pop();
+                _thread_pool_spinlock.unlock();
+                task_to_run();
             }
+            else _thread_pool_spinlock.unlock();
+
         }
 
 
-        void spawnThreads(int number)
+       inline void spawnThreads(size_t number)
         {
-            for(int i = 0; i < number; ++i)
+            for(size_t i = 0; i < number; ++i)
             {
-                std::thread t([&]()
+                std::thread thread([&]()
                 {
                     while(alive) Worker();
-                    exit(0);
                 });
-                t.detach();
+                thread.detach();
             }
         }
 
         public:
 
-        void Add_job(const std::function<void()>& job)
+        inline void AddTask(Task* task)
         {
-            _thread_pool_lock.lock();
-            __runnable_tasks.emplace(std::move(job));
-            _thread_pool_lock.unlock();
+            _thread_pool_spinlock.lock();
+           // printf("Task: %p added\n", task);
+            _runnable_tasks.emplace(task);
+            _thread_pool_spinlock.unlock();
         }
 
-        Thread_pool(const std::function<void()> idle):_idle_function(idle), alive(true)
+        ThreadPool(): alive(true)
         {
-            spawnThreads(processor_count-2);
+            spawnThreads(processor_count);
         }
 
-        Thread_pool(const std::function<void()> idle, int numThreads):_idle_function(idle), alive(true)
+        ThreadPool(int numThreads): alive(true)
         {
             spawnThreads(numThreads);
         }
 
-        ~Thread_pool()
+        ~ThreadPool()
         {
             alive = false;
         }
 
     };
-
-    Thread_pool pool;
-
-   
-
-
-    void doWork()
+    struct sentinel_access_type_counter
     {
-        
-        if(_blocked_tasks_lock.try_lock())
+        std::deque<Task*>    _out_waiting_to_0;
+        std::deque<depend_limit> _in_counter_for_out;
+        SpinLock sentinel_mtx;
+
+        inline void decreaseIn()
         {
-            if(_blocked_task_queue.size()>0)
-            {
-                std::function<bool()> sentToRun = std::move(_blocked_task_queue.front());
-                _blocked_task_queue.pop();
-                _blocked_tasks_lock.unlock();
-                
-                if(!sentToRun())
-                {
-                    _blocked_tasks_lock.lock();
-                    _blocked_task_queue.emplace(std::move(sentToRun));
-                    _blocked_tasks_lock.unlock();
-                }
-            }
-            else _blocked_tasks_lock.unlock();
-      
+            sentinel_mtx.lock();
+            _in_counter_for_out.front()--;
+
+            if(_in_counter_for_out.front() == 0 && _out_waiting_to_0.front() != nullptr)
+                _out_waiting_to_0.front()->decreaseCountdown();
+            
+            sentinel_mtx.unlock();
         }
+
+        inline void increaseIn()
+        {
+            sentinel_mtx.lock();
+            _in_counter_for_out.back()++;
+            sentinel_mtx.unlock();
+        }
+
+        inline void processSingleOut()
+        {
+            sentinel_mtx.lock();
+            _out_waiting_to_0.pop_front();
+            _in_counter_for_out.pop_front();
+            if(_in_counter_for_out.size() == 0)  _in_counter_for_out.push_back(0);
+            if(_out_waiting_to_0.size() == 0)    _out_waiting_to_0.push_back(nullptr);
+
+            if(_in_counter_for_out.front() == 0 && _out_waiting_to_0.front()!=nullptr) 
+                _out_waiting_to_0.front()->decreaseCountdown();
+
+            sentinel_mtx.unlock();
+        }
+        inline void addTaskDep(Task* task, bool read)
+        {
+            sentinel_mtx.lock();
+
+            if(_out_waiting_to_0.size() == 0) 
+                _out_waiting_to_0.push_back(nullptr);
+
+            if(_in_counter_for_out.size() == 0) 
+                _in_counter_for_out.push_back(0);
+
+            const bool write = !read;
+            if(read)
+            {
+                task->decreaseAfterExecution(this);
+                _in_counter_for_out.back()++;
+                if(_out_waiting_to_0.back() != nullptr) //1 means that this dependence is satisfied!
+                {
+                    task->increaseCountdown();
+                    _out_waiting_to_0.back()->addNotify(task);
+                }
+                            }
+
+            if(write)
+            {
+                
+                if(_out_waiting_to_0.front() != nullptr)
+                {
+                    task->increaseCountdown();
+                    _out_waiting_to_0.push_back(task);
+                    _in_counter_for_out.push_back(0);
+                }
+                else
+                {
+                    _out_waiting_to_0.front() = task;
+                    if(_in_counter_for_out.front() != 0)
+                    {
+                        //can't run task yet! but that's ok!
+                        task->increaseCountdown();
+                    }
+                }
+                task->outAfterExecution(this);
+            }
+            sentinel_mtx.unlock();
+
+        }
+       
+    };
+
+
+
+
+    private: 
+
+    inline void releaseTask(Task* task)
+    {
+        _preallocTasksMtx.lock();
+        _preallocatedTasks.push(task);
+        _preallocTasksMtx.unlock();
+    }
+
+    inline Task* getPreallocatedTask()
+    {
+        _preallocTasksMtx.lock();
+        if(_preallocatedTasks.size() == 0)
+            for(int i = 0; i < 100; ++i)
+                _preallocatedTasks.push(new Task(*this));
         
+        Task* task = _preallocatedTasks.front();
+        _preallocatedTasks.pop();
+        _preallocTasksMtx.unlock();
+        return task;
+    }
+
+    public:
+
+    inline void createTask(const std::function<void()>& asyncTask, const std::vector<uintptr_t>& in, const std::vector<uintptr_t>& out)
+    {
+        _running_tasks++;
+        Task* task = getPreallocatedTask();
+        task->increaseCountdown();
+        task->_fun = std::move(asyncTask);
+
+        for(const uintptr_t i : in)  _sentinel_value[i].addTaskDep(task,true);
+        for(const uintptr_t i : out) _sentinel_value[i].addTaskDep(task,false);
+
+        task->decreaseCountdown();
+    }
+
+    inline void taskWait()
+    {
+        while(_running_tasks != 0)
+        { 
+            std::this_thread::yield(); 
+        }
     }
 
 
     public:
+    template<typename... T> static std::vector<uintptr_t> deps(const T... params){return {(uintptr_t) params...};}
+    MiniRun() :_pool(), _running_tasks(0) {}
+    MiniRun(int numThreads) : _pool(numThreads), _running_tasks(0) {}
+    ~MiniRun(){}
 
-    //c++20
-    /*
-        static std::vector<uintptr_t> deps(const auto ... params)
-        {
-            return {(uintptr_t) params...};
-        }
-    */
-    template<typename... T>
-    static std::vector<uintptr_t> deps(const T... params)
-    {
-        return {(uintptr_t) params...};
-    }
+    private:     
+    
+    ThreadPool _pool;
+    std::atomic<int> _running_tasks;
+    std::unordered_map<uintptr_t, sentinel_access_type_counter> _sentinel_value;
+    SpinLock _preallocTasksMtx;
+    std::queue<Task*> _preallocatedTasks;
 
-    void createTask(std::function<void()> asyncTask, const std::vector<uintptr_t>& in, const std::vector<uintptr_t>& out)
-    {
-        _running_tasks++;
-        std::vector<sentinel_access_type_counter*> in_a;
-        std::vector<sentinel_access_type_counter*> out_a;
-
-        in_a.reserve(in.size());
-        out_a.reserve(out.size());
-
-        map_lock.lock();
-        for(const uintptr_t i : in)  in_a.push_back(&_sentinel_value[i]);
-        for(const uintptr_t i : out) out_a.push_back(&_sentinel_value[i]);
-        map_lock.unlock();
-
-
-        auto magic =  [&, task = std::move(asyncTask), in_a = std::move(in_a), out_a = std::move(out_a)]()->bool
-        {
-            auto isReady = [&]()
-            {
-                std::lock_guard<std::mutex> guard(map_lock);
-                for(sentinel_access_type_counter* t : in_a)
-                    if(t->out != 0)
-                        return false;
-                        
-                for(sentinel_access_type_counter* t : out_a)
-                    if(t->out + t->in  != 0)
-                        return false;
-                
-                //if it arrives here, it's ready to be executed!
-                for(sentinel_access_type_counter* t : in_a)
-                    t->in++;
-                for(sentinel_access_type_counter* t : out_a)
-                    t->out++;
-                
-                return true;
-            };
-
-            if(isReady())
-            {
-                pool.Add_job([&, task = std::move(task), in_a = std::move(in_a), out_a = std::move(out_a)](){
-                    task();
-                    //end task
-                    std::lock_guard<std::mutex> guard(map_lock);
-                    for(sentinel_access_type_counter* t : in_a) t->in--;
-                    for(sentinel_access_type_counter* t : out_a) t->out--;
-                    _running_tasks--;
-
-                });
-                return true;
-            }
-            return false;
-        };
-
-        if(!magic())
-        {
-            _blocked_tasks_lock.lock();
-            _blocked_task_queue.emplace(magic);
-            _blocked_tasks_lock.unlock();
-        }
-            
-        }
-
-    void taskWait()
-    {
-        while(_running_tasks != 0);
-    }
-
-    MiniRun() : _running_tasks(0), pool([&](){doWork();})
-    {
-    }
-
-    MiniRun(int numThreads) : _running_tasks(0), pool([&](){doWork();},numThreads)
-    {
-
-    }
-    ~MiniRun()
-    {
-    }
 };
