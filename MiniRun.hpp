@@ -4,15 +4,17 @@
 #include <thread>
 #include <functional>
 #include <atomic>
-
+#include <array>
 #include <unordered_map>
 #include <list>
 #include <deque>
 #include <queue>
-
+#include <set>
 class MiniRun
 {
     using depend_limit = uint32_t;
+
+
     struct Task;
     struct sentinel_access_type_counter;
     class SpinLock {
@@ -33,6 +35,7 @@ class MiniRun
         bool _taskHasFinished;
         depend_limit _countdownToRelease;
         SpinLock countdownMtx;
+        uint32_t group;
 
 
         Task(MiniRun& ref) : targetRuntime(ref), _taskHasFinished(false), _countdownToRelease(0)
@@ -58,9 +61,14 @@ class MiniRun
             onFinish();
             reinitialize();
             targetRuntime.releaseTask(this);
-            targetRuntime._running_tasks--;
+            targetRuntime._global_running_tasks--;
+            targetRuntime._running_tasks[group]--;
         }
 
+        inline void setGroup(uint32_t grp)
+        {
+            group = grp;
+        }
         inline void decreaseAfterExecution(sentinel_access_type_counter* sentinel)
         {
             _decreaseInCounterAfterExecution.push_back(sentinel);
@@ -283,22 +291,50 @@ class MiniRun
 
     public:
 
-    inline void createTask(const std::function<void()>& asyncTask, const std::vector<uintptr_t>& in, const std::vector<uintptr_t>& out)
+    const static int MAX_GROUPS = 100;
+    const static int DEFAULT = MAX_GROUPS;
+
+    private: const static int MAX_GROUPS_IDX = MAX_GROUPS+1;
+    public:
+
+    inline void createTask(const std::function<void()>& asyncTask, uint32_t group)
     {
-        _running_tasks++;
+        createTask(asyncTask, {}, {}, group);
+    }
+
+    inline void createTask(const std::function<void()>& asyncTask)
+    {
+        createTask(asyncTask, {}, {});
+    }
+
+
+    inline void createTask(const std::function<void()>& asyncTask, const std::vector<uintptr_t>& in, const std::vector<uintptr_t>& out, uint32_t group = DEFAULT)
+    {
+        _global_running_tasks++;
+        _running_tasks[group]++;
+        
         Task* task = getPreallocatedTask();
         task->increaseCountdown();
         task->_fun = std::move(asyncTask);
-
-        for(const uintptr_t i : in)  _sentinel_value[i].addTaskDep(task,true);
-        for(const uintptr_t i : out) _sentinel_value[i].addTaskDep(task,false);
+        task->setGroup(group);
+        for(const uintptr_t i : in)  _sentinel_value_map[group][i].addTaskDep(task,true);
+        for(const uintptr_t i : out) _sentinel_value_map[group][i].addTaskDep(task,false);
 
         task->decreaseCountdown();
     }
 
+
+    inline void taskWait(uint64_t group)
+    {
+        while(_running_tasks[group] != 0)
+        { 
+            std::this_thread::yield(); 
+        }
+    }
+
     inline void taskWait()
     {
-        while(_running_tasks != 0)
+        while(_global_running_tasks != 0)
         { 
             std::this_thread::yield(); 
         }
@@ -307,15 +343,16 @@ class MiniRun
 
     public:
     template<typename... T> static std::vector<uintptr_t> deps(const T... params){return {(uintptr_t) params...};}
-    MiniRun() :_pool(), _running_tasks(0) {}
-    MiniRun(int numThreads) : _pool(numThreads), _running_tasks(0) {}
+    MiniRun() :_pool(), _global_running_tasks(0) {}
+    MiniRun(int numThreads) : _pool(numThreads), _global_running_tasks(0) {}
     ~MiniRun(){}
 
     private:     
     
     ThreadPool _pool;
-    std::atomic<int> _running_tasks;
-    std::unordered_map<uintptr_t, sentinel_access_type_counter> _sentinel_value;
+    std::atomic<uint64_t> _global_running_tasks;
+    std::array<std::atomic<uint64_t>, MAX_GROUPS_IDX> _running_tasks;
+    std::array<std::unordered_map<uintptr_t, sentinel_access_type_counter>, MAX_GROUPS_IDX> _sentinel_value_map;
     SpinLock _preallocTasksMtx;
     std::queue<Task*> _preallocatedTasks;
 
