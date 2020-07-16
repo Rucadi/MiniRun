@@ -98,7 +98,7 @@ The example shows the case of a block of a matrix multiply which uses MiniRun:
 	    return  i+j;
     }
     
-    int  main(){ printf ("fib(%d) = %d\n", n, fib(25)); }
+    int  main(){ int n=25; printf ("fib(%d) = %d\n", n, fib(n)); }
 
 
 ## Compile
