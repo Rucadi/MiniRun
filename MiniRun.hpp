@@ -334,7 +334,7 @@ class MiniRun
     {
         _preallocTasksMtx.lock();
         if(_preallocatedTasks.size() == 0)
-            for(int i = 0; i < 10000; ++i)
+            for(int i = 0; i < 100; ++i)
                 _preallocatedTasks.push(new Task(*this));
         
         Task* task = _preallocatedTasks.front();
@@ -358,9 +358,9 @@ class MiniRun
 
     inline  sentinel_map_type& getSentinelMapForGroup(group_t group)
     {
-        _structure_locks[3].lock();
+        _structure_locks[2].lock();
         sentinel_map_type& svm = _sentinel_value_map[group];
-        _structure_locks[3].unlock();
+        _structure_locks[2].unlock();
         return svm;
     }
 
@@ -415,7 +415,8 @@ class MiniRun
         for(const uintptr_t i : in)  
             getSentinelMapForGroup(group)[i].addTaskDep(task,true);
         for(const uintptr_t i : out) 
-          getSentinelMapForGroup(group)[i].addTaskDep(task,false);        
+          getSentinelMapForGroup(group)[i].addTaskDep(task,false); 
+       
         groupUnlock(group);
 
         task->activate();
@@ -431,10 +432,8 @@ class MiniRun
 
     inline void taskwait()
     {
-      
         while( _global_running_tasks != 0)
             _pool.runTaskExternalThread();
-
     }
 
 
@@ -442,13 +441,13 @@ class MiniRun
     template<typename... T> static dep_list_t deps(const T&... params) { return {(uintptr_t) std::is_pointer<T>::value?(uintptr_t)params:(uintptr_t)&params...}; }
     MiniRun() :_pool(), _global_running_tasks(0) {}
     MiniRun(int numThreads) : _pool(numThreads), _global_running_tasks(0) {}
-    ~MiniRun(){while(!_preallocatedTasks.empty()){delete _preallocatedTasks.front();_preallocatedTasks.pop();}}
+    ~MiniRun(){taskwait(); while(!_preallocatedTasks.empty()){delete _preallocatedTasks.front();_preallocatedTasks.pop();}}
 
 
     private:     
     
     ThreadPool _pool;
-    SpinLock _structure_locks[3]; //std::array was not compiling with emscripten
+    SpinLock _structure_locks[3];
     std::atomic<num_tasks_t>                               _global_running_tasks;
     std::unordered_map<group_t, sentinel_map_type>         _sentinel_value_map;
     std::unordered_map<group_t, std::atomic<num_tasks_t> > _running_tasks;
