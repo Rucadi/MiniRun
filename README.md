@@ -64,6 +64,11 @@ The first one, will wait until the execution of all the tasks, and the second on
 
 While "blocked" at the taskwait, the taskwait thread will be used for executing tasks.
 
+# EMSCRIPTEN
+
+Since emscripten supports threading, and this runtime has no dependences, it can be used in web applications using the emscripten compiler, without any modifications to the code.
+
+# EXAMPLES
   ## Basic example: Matmul block
 The example shows the case of a block of a matrix multiply which uses MiniRun:
 
