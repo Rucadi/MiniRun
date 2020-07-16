@@ -68,6 +68,9 @@ While "blocked" at the taskwait, the taskwait thread will be used for executing 
 
 Since emscripten supports threading, and this runtime has no dependences, it can be used in web applications using the emscripten compiler, without any modifications to the code.
 
+Example of compilation and running with emscripten:
+	 em++ main.cpp -s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=8 -s TOTAL_MEMORY=2047mb
+	 node --experimental-wasm-threads --experimental-wasm-bulk-memory  ./a.out.js 
 # EXAMPLES
   ## Basic example: Matmul block
 The example shows the case of a block of a matrix multiply which uses MiniRun:
