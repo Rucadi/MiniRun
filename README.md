@@ -78,18 +78,18 @@ Example of compilation and running with emscripten:
 The example shows the case of a block of a matrix multiply which uses MiniRun:
 
       
-	const int block = 128;
-	void  block_matmul(const  float  *a, const  float  *b, float  *c)
+	void matmul(MiniRun& runtime, const size_t size, const matrix_type *a, const matrix_type *b,  matrix_type *c)
 	{
-		runtime.createTask(
+	    runtime.createTask(
 		[=]()
 		{
-			for (int k = 0; k < block; ++k)
-				for (int i = 0; i < block; ++i)
-					for (int j = 0; j < block; ++j)
-					c[i*block + j] += a[i*block+ k] * b[k*block+ j];
-		}, 	MiniRun::deps(a,b), MiniRun::deps(c));
+		    for(size_t k=0; k < size; ++k)
+			for(size_t i=0; i < size; ++i)
+			 for(size_t j=0; j < size; ++j)
+			    c[i*size + j] += a[i*size + k] * b[k*size + j];
+		}, MiniRun::deps(a,b), MiniRun::deps(c));
 	}
+
 	
 
 # Basic example: Fibonnaci numbers
