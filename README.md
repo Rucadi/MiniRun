@@ -88,7 +88,7 @@ The example shows the case of a block of a matrix multiply which uses MiniRun:
 	
 
 # Basic example: Fibonnaci numbers
-(Never ever program it this way, this only serves as demonstration)
+(Never ever program it this way, this only serves as demonstration, a n too big will cause to stack-overflow)
 
     MiniRun  run;
     std::atomic<int> group(0);
