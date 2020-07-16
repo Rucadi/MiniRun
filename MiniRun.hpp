@@ -448,7 +448,7 @@ class MiniRun
     private:     
     
     ThreadPool _pool;
-    std::array<SpinLock, 3> _structure_locks;
+    SpinLock _structure_locks[3]; //std::array was not compiling with emscripten
     std::atomic<num_tasks_t>                               _global_running_tasks;
     std::unordered_map<group_t, sentinel_map_type>         _sentinel_value_map;
     std::unordered_map<group_t, std::atomic<num_tasks_t> > _running_tasks;
