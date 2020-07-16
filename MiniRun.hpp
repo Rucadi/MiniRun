@@ -30,7 +30,7 @@ SOFTWARE.
 #include <unordered_map>
 #include <queue>
 #include <atomic>
-
+#include <unistd.h>
 class MiniRun
 {
     class  SpinLock;
@@ -63,7 +63,7 @@ class MiniRun
         inline void worker()
         {
             _thread_pool_spinlock.lock();
-            if(_runnable_tasks.size() > 0)
+            if(!_runnable_tasks.empty())
             {
                 Task& task_to_run = *_runnable_tasks.front();
                 _runnable_tasks.pop();
@@ -427,13 +427,19 @@ class MiniRun
 
         auto& runningTasksGroup = getGroupRunningTasksCounter(group);
         while(runningTasksGroup != 0)
+        {
             _pool.runTaskExternalThread();
+            usleep(50);
+        }
     }
 
     inline void taskwait()
     {
         while( _global_running_tasks != 0)
+        {
             _pool.runTaskExternalThread();
+            usleep(50);
+        }
     }
 
 
@@ -441,7 +447,7 @@ class MiniRun
     template<typename... T> static dep_list_t deps(const T&... params) { return {(uintptr_t) std::is_pointer<T>::value?(uintptr_t)params:(uintptr_t)&params...}; }
     MiniRun() :_pool(), _global_running_tasks(0) {}
     MiniRun(int numThreads) : _pool(numThreads), _global_running_tasks(0) {}
-    ~MiniRun(){taskwait(); while(!_preallocatedTasks.empty()){delete _preallocatedTasks.front();_preallocatedTasks.pop();}}
+    ~MiniRun(){ taskwait(); while(!_preallocatedTasks.empty()){delete _preallocatedTasks.front();_preallocatedTasks.pop();}}
 
 
     private:     
