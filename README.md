@@ -14,7 +14,7 @@ We have two types of dependence, IN and OUT dependences:
 **IN** dependences are the ones that request the symbol for **READ ACCESS**
 **OUT** dependences are the ones that request the symbol for **WRITE ACCESS**
 
-While the runtime will allow multiple IN dependences in different tasks, only one OUT dependence can run over the same symbol at the same time.
+While the runtime will allow multiple tasks with the same IN dependences to run, only a task with the same OUT dependence that another can be running at a time, and the one that will run is the first one that was created. This way, we extract the parallelism from the data itself, and there is no need to specify the dependences manually.  
 
 # Usage
 
