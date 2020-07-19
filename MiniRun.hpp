@@ -30,9 +30,10 @@ SOFTWARE.
 #include <unordered_map>
 #include <queue>
 #include <atomic>
-#include <unistd.h>
 #include <set>
 #include <csignal>
+#include <mutex>
+#include <cassert>
 
 class MiniRun
 {
@@ -58,25 +59,41 @@ class MiniRun
             inline void unlock() {locked.clear(std::memory_order_release);}
     };
 
+    class lock_guard
+    {
+        SpinLock &_lock;
+        public:
+            inline lock_guard(SpinLock& lock):_lock(lock)
+            {
+                _lock.lock();
+            }
+            inline ~lock_guard()
+            {
+                _lock.unlock();
+            }
+    };
+
     class ThreadPool
     {
-        const int processor_count = std::thread::hardware_concurrency();
-        bool alive;
+        const int _processor_count = std::thread::hardware_concurrency();
+        bool _alive;
         bool _minirunDisabled = std::getenv("DISABLE_MINIRUN")!=nullptr;
         std::queue<Task*>     _runnable_tasks;
         SpinLock              _thread_pool_spinlock;
 
         inline void worker()
         {
-            _thread_pool_spinlock.lock();
-            if(!_runnable_tasks.empty())
+
+            Task *task_to_run = nullptr;
             {
-                Task& task_to_run = *_runnable_tasks.front();
-                _runnable_tasks.pop();
-                _thread_pool_spinlock.unlock();
-                task_to_run();
+                lock_guard guard(_thread_pool_spinlock);
+                if(!_runnable_tasks.empty())
+                {
+                    task_to_run = _runnable_tasks.front();
+                    _runnable_tasks.pop();
+                }
             }
-            else _thread_pool_spinlock.unlock();
+            if(task_to_run != nullptr) (*task_to_run)();
 
         }
 
@@ -87,7 +104,7 @@ class MiniRun
             {
                 std::thread thread([&]()
                 {
-                    while(alive) worker();
+                    while(_alive) worker();
                 });
                 thread.detach();
             }
@@ -97,37 +114,28 @@ class MiniRun
 
         inline void runTaskExternalThread()
         {
-            _thread_pool_spinlock.lock();
-            if(!_runnable_tasks.empty())
-            {
-                Task& task_to_run = *_runnable_tasks.front();
-                _runnable_tasks.pop();
-                _thread_pool_spinlock.unlock();
-                task_to_run();
-            }
-            else _thread_pool_spinlock.unlock();
+            worker();
         }
 
         inline void addTask(Task* task)
         {
-            _thread_pool_spinlock.lock();
+            lock_guard guard(_thread_pool_spinlock);
             _runnable_tasks.emplace(task);
-            _thread_pool_spinlock.unlock();
         }
 
-        ThreadPool(): alive(true)
+        ThreadPool(): _alive(true)
         {
-            if(!_minirunDisabled) spawnThreads(processor_count-1);
+            if(!_minirunDisabled) spawnThreads(_processor_count-1);
         }
 
-        ThreadPool(int numThreads): alive(true)
+        ThreadPool(int numThreads): _alive(true)
         {
            if(!_minirunDisabled) spawnThreads(numThreads);
         }
 
         ~ThreadPool()
         {
-            alive = false;
+            _alive = false;
         }
 
     };
@@ -143,16 +151,12 @@ class MiniRun
                 void increaseCountdown(Task* task = nullptr)
                 {
                     countdownToOut++;
-                    //if(task!=nullptr) printf("[%p] INCREASED count to %d by %p\n",this, countdownToOut, task);
                 }
 
                 void decreaseCountdown(Task* task = nullptr)
                 {
                     countdownToOut--;
-                    //if(task!=nullptr) printf("[%p] DECREASED count to %d by %p\n",this, countdownToOut, task);
-                    if(countdownToOut<0) std::abort();
                 }
-
 
             };
 
@@ -182,22 +186,20 @@ class MiniRun
             }
             inline void decreaseIn(Task* task = nullptr)
             {
-                _sentinel_mtx.lock();
+                lock_guard guard(_sentinel_mtx);
                 _blocks.front().decreaseCountdown(task);
                 _processNext();
-                _sentinel_mtx.unlock();
             }
 
             inline void increaseIn(Task* task = nullptr)
             {
-                _sentinel_mtx.lock();
+                lock_guard guard(_sentinel_mtx);
                 _blocks.back().increaseCountdown(task);
-                _sentinel_mtx.unlock();
             }
 
             inline void processSingleOut()
             {
-                _sentinel_mtx.lock();
+                lock_guard guard(_sentinel_mtx);
                 _eraseBlock();
                 _blocks.front().outTask = nullptr;
                 while(!_blocks.front()._blockedTasks.empty())
@@ -206,11 +208,10 @@ class MiniRun
                     _blocks.front()._blockedTasks.pop();
                 }
                 _processNext();
-                _sentinel_mtx.unlock();
             }
             inline void addTaskDep(Task* task, bool read)
             {
-                _sentinel_mtx.lock();
+                lock_guard guard(_sentinel_mtx);
                 if(_blocks.size()==0) _blocks.push_back({nullptr,0});
 
                 if(read)
@@ -231,7 +232,6 @@ class MiniRun
                 }
 
                 _processNext();
-                _sentinel_mtx.unlock();
             }
         
         };
@@ -306,7 +306,6 @@ class MiniRun
                 onFinish();
                 _targetRuntime.releaseTask(this);
                 _targetRuntime.decreaseRunningTasks(_group);
-                _targetRuntime.removeUnfinished(this);
             };
 
             if(!_hasAsynchronousFinalization)
@@ -350,20 +349,17 @@ class MiniRun
 
         inline void increaseCountdown()
         {
-            _countdownMtx.lock();
+            lock_guard guard(_countdownMtx);
             _countdownToRelease++;
-            _countdownMtx.unlock();
         }
 
         inline void decreaseCountdown()
         {
-            _countdownMtx.lock();
-            
+            lock_guard guard(_countdownMtx);            
             _countdownToRelease--;
             if(_countdownToRelease == 0) _targetRuntime.addTask(this);
-            
-            _countdownMtx.unlock();
         }
+
         inline void onFinish()
         {
             _taskHasFinished = true;
@@ -377,68 +373,51 @@ class MiniRun
 
     inline void releaseTask(Task* task)
     {
-        _preallocTasksMtx.lock();
+        lock_guard guard(_preallocTasksMtx);            
         _preallocatedTasks.push(task);
-        _preallocTasksMtx.unlock();
     }
 
     inline Task* getPreallocatedTask()
     {
-        _preallocTasksMtx.lock();
+        lock_guard guard(_preallocTasksMtx);            
         if(_preallocatedTasks.size() == 0)
             for(int i = 0; i < 100; ++i)
                 _preallocatedTasks.push(new Task(*this));
         
         Task* task = _preallocatedTasks.front();
         _preallocatedTasks.pop();
-        _preallocTasksMtx.unlock();
         return task;
     }
 
-    inline void groupLock(const group_t group)
-    {
-        _structure_locks[0].lock();
-        _group_lock[group].lock();
-        _structure_locks[0].unlock();
-    }
-    inline void groupUnlock(const group_t group)
-    {
-        _structure_locks[0].lock();
-        _group_lock[group].unlock();
-        _structure_locks[0].unlock();
-    }
+
 
     inline  sentinel_map_type& getSentinelMapForGroup(group_t group)
     {
-        _structure_locks[2].lock();
+        lock_guard guard(_structure_locks[2]);            
         sentinel_map_type* svm= &_sentinel_value_map[group];
-        _structure_locks[2].unlock();
         return *svm;
     }
 
 
     inline std::atomic<num_tasks_t>& getGroupRunningTasksCounter(group_t group)
     {
-        _structure_locks[1].lock();
+        lock_guard guard(_structure_locks[1]);            
         std::atomic<num_tasks_t>& ref = *(&_running_tasks[group]);
-        _structure_locks[1].unlock();
         return ref;
     }
 
     inline void increaseRunningTasks(group_t group)
     {
         _global_running_tasks++;
-        _structure_locks[1].lock();
+        lock_guard guard(_structure_locks[1]);            
         _running_tasks[group]++;
-        _structure_locks[1].unlock();
     }
 
     inline void decreaseRunningTasks(group_t group)
     {
         _global_running_tasks--;
-        _structure_locks[1].lock();
+        lock_guard guard(_structure_locks[1]);            
         _running_tasks[group]--;
-        _structure_locks[1].unlock();
     } 
 
     inline void addTask(Task* task)
@@ -451,19 +430,7 @@ class MiniRun
 
     std::set<Task*> _unfinished_tasks;
 
-    void addUnfinished(Task* task)
-    {
-        debugLock.lock();
-        _unfinished_tasks.emplace(task);
-        debugLock.unlock();
-    }
 
-    void removeUnfinished(Task* task)
-    {
-        debugLock.lock();
-        _unfinished_tasks.erase(task);
-        debugLock.unlock();
-    }
 
 
 
@@ -471,12 +438,12 @@ class MiniRun
     {
         group_t group = task->getGroup();
         increaseRunningTasks(group);
-        addUnfinished(task);
 
-        groupLock(group);
-        for(const uintptr_t i : in) getSentinelMapForGroup(group)[i].addTaskDep(task,true);
-        for(const uintptr_t i : out) getSentinelMapForGroup(group)[i].addTaskDep(task,false); 
-        groupUnlock(group);
+        {
+            lock_guard guard(_structure_locks[0]);            
+            for(const uintptr_t i : in) getSentinelMapForGroup(group)[i].addTaskDep(task,true);
+            for(const uintptr_t i : out) getSentinelMapForGroup(group)[i].addTaskDep(task,false); 
+        }
 
         task->activate();
     }
@@ -559,8 +526,6 @@ class MiniRun
     std::unordered_map<group_t, std::atomic<num_tasks_t> > _running_tasks;
     std::unordered_map<group_t, SpinLock>                  _group_lock;
     bool _minirunDisabled = std::getenv("DISABLE_MINIRUN")!=nullptr;
-
-    SpinLock debugLock;
 
     //tasks
     SpinLock          _preallocTasksMtx;
