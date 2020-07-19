@@ -440,18 +440,12 @@ class MiniRun
 
         increaseRunningTasks(group);
 
-        
         Task* task = getPreallocatedTask()->prepare(async_fun, group);
         addUnfinished(task);
+
         groupLock(group);
-        for(const uintptr_t i : in)
-        {
-            getSentinelMapForGroup(group)[i].addTaskDep(task,true);
-        }
-        for(const uintptr_t i : out) 
-        {
-          getSentinelMapForGroup(group)[i].addTaskDep(task,false); 
-        }
+        for(const uintptr_t i : in) getSentinelMapForGroup(group)[i].addTaskDep(task,true);
+        for(const uintptr_t i : out) getSentinelMapForGroup(group)[i].addTaskDep(task,false); 
         groupUnlock(group);
 
         task->activate();
@@ -463,20 +457,15 @@ class MiniRun
 
         auto& runningTasksGroup = getGroupRunningTasksCounter(group);
         while(runningTasksGroup != 0)
-        {
             _pool.runTaskExternalThread();
-            usleep(50);
-        }
+
     }
 
     inline void taskwait()
     {
         while( _global_running_tasks != 0)
-        {
-           // printf("GlobalRunning: %d\n",_global_running_tasks.load());
             _pool.runTaskExternalThread();
-            usleep(50);
-        }
+        
     }
 
 
