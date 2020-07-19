@@ -38,6 +38,7 @@ SOFTWARE.
 class MiniRun
 {
     class  SpinLock;
+    class  lock_guard;
     class  ThreadPool;
     struct sentinel_access_type_counter;
     struct Task;
@@ -240,7 +241,6 @@ class MiniRun
     {
         MiniRun& _targetRuntime;
         std::vector<Task*> _taskNotify;
-        std::vector<sentinel_access_type_counter*> _increaseInCounterBeforeExecution;
         std::vector<sentinel_access_type_counter*> _decreaseInCounterAfterExecution;
         std::vector<sentinel_access_type_counter*> _processFinishOutAfterExecution;
 
@@ -258,7 +258,6 @@ class MiniRun
         Task(MiniRun& ref) : _targetRuntime(ref), _taskHasFinished(false), _countdownToRelease(0)
         {
             _taskNotify.reserve(10);
-            _increaseInCounterBeforeExecution.reserve(10);
             _decreaseInCounterAfterExecution.reserve(10);
             _processFinishOutAfterExecution.reserve(10);
         }
@@ -266,7 +265,6 @@ class MiniRun
         inline void reinitialize()
         {
             _taskNotify.clear();
-            _increaseInCounterBeforeExecution.clear();
             _decreaseInCounterAfterExecution.clear();
             _processFinishOutAfterExecution.clear();
             _countdownToRelease = 0;
@@ -426,14 +424,6 @@ class MiniRun
     }
     public:
 
-
-
-    std::set<Task*> _unfinished_tasks;
-
-
-
-
-
     inline void registerTask(Task* task,  const dep_list_t& in, const dep_list_t& out)
     {
         group_t group = task->getGroup();
@@ -448,8 +438,6 @@ class MiniRun
         task->activate();
     }
     
-
-
     //CONSTRUCTORS FOR TASKS WITH SYNCHRONOUS FINALIZATION
     
     inline void createTask(const task_fun_t&  async_fun, group_t group)
@@ -468,7 +456,6 @@ class MiniRun
             return registerTask(getPreallocatedTask()->prepare(async_fun, group), in, out);
         else async_fun();
     }
-
 
 
     //CONSTRUCTORS FOR TASKS WITH ASYNCHRONOUS FINALIZATIONS
