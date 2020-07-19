@@ -1,6 +1,3 @@
-This example has been adapted from:
-
-https://github.com/bsc-pm/ompss-ee/tree/master/01-examples/cholesky
 
 This example has been adapted from:
 
@@ -10,4 +7,4 @@ https://github.com/bsc-pm/ompss-ee/tree/master/01-examples/cholesky
 
 In order to compile it, you will need Intel MKL, and set the following flags if installed in default location:
 
-``-I/opt/intel/mkl/include -L/opt/intel/mkl/lib/intel64/  -lmkl_sequential -lmkl_core -lmkl_rt -lpthread``
+    -I/opt/intel/mkl/include -L/opt/intel/mkl/lib/intel64/  -lmkl_sequential -lmkl_core -lmkl_rt -lpthread
