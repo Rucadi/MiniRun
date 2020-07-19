@@ -41,7 +41,8 @@ class MiniRun
     struct sentinel_access_type_counter;
     struct Task;
 
-    using task_fun_t        =  std::function<void()>; //enforcement of const&
+    using task_fun_t        =  std::function<void()>;
+    using task_async_fin    =  std::function<bool()>;
     using dep_t             =  uintptr_t;             //we track pointers, this is the size of a pointer type.
     using dep_list_t        =  std::vector<dep_t>;    //enforcement of const&
     using group_t           =  uint32_t;              //this decides the type of the groups, value 0 is reserved to default
@@ -61,8 +62,10 @@ class MiniRun
     {
         const int processor_count = std::thread::hardware_concurrency();
         bool alive;
+        bool _minirunDisabled = std::getenv("DISABLE_MINIRUN")!=nullptr;
         std::queue<Task*>     _runnable_tasks;
         SpinLock              _thread_pool_spinlock;
+
         inline void worker()
         {
             _thread_pool_spinlock.lock();
@@ -114,12 +117,12 @@ class MiniRun
 
         ThreadPool(): alive(true)
         {
-            spawnThreads(processor_count-1);
+            if(!_minirunDisabled) spawnThreads(processor_count-1);
         }
 
         ThreadPool(int numThreads): alive(true)
         {
-            spawnThreads(numThreads);
+           if(!_minirunDisabled) spawnThreads(numThreads);
         }
 
         ~ThreadPool()
@@ -242,7 +245,11 @@ class MiniRun
         std::vector<sentinel_access_type_counter*> _processFinishOutAfterExecution;
 
         task_fun_t           _fun;
+        task_async_fin       _fin;
+
         bool                 _taskHasFinished;
+        bool                 _isAwaitingForFinalization;
+        bool                 _hasAsynchronousFinalization;
         num_tasks_t          _countdownToRelease;
         SpinLock             _countdownMtx;
         group_t              _group;
@@ -264,6 +271,8 @@ class MiniRun
             _processFinishOutAfterExecution.clear();
             _countdownToRelease = 0;
             _taskHasFinished = false;
+            _hasAsynchronousFinalization = false;
+            _isAwaitingForFinalization = false;
         }
 
         inline Task* prepare(const task_fun_t& async_fun, group_t group)
@@ -275,23 +284,59 @@ class MiniRun
             return this;
         }
 
+        inline Task* prepare(const task_fun_t& async_fun, const task_async_fin& async_fin,  group_t group)
+        {
+            reinitialize();
+            _fun = std::move(async_fun);
+            _fin = std::move(async_fin);
+            _hasAsynchronousFinalization = true;
+            _group = group;
+            increaseCountdown();
+            return this;
+        }
+
         inline void activate()
         {
             decreaseCountdown();
         }
         inline void operator()()
         {
-            _fun();
-            onFinish();
-            _targetRuntime.releaseTask(this);
-            _targetRuntime.decreaseRunningTasks(_group);
-            _targetRuntime.removeUnfinished(this);
+            
+            const auto finalizeTask =  [&](){
+                onFinish();
+                _targetRuntime.releaseTask(this);
+                _targetRuntime.decreaseRunningTasks(_group);
+                _targetRuntime.removeUnfinished(this);
+            };
+
+            if(!_hasAsynchronousFinalization)
+            {
+                _fun();
+                finalizeTask();
+            }
+            else
+            {
+                
+                if(!_isAwaitingForFinalization)
+                {
+                    _isAwaitingForFinalization = true;
+                    _fun();
+                }
+
+                if(_fin()) finalizeTask();
+                else _targetRuntime.addTask(this);
+
+            }
 
         }
 
         inline void setGroup(group_t group)
         {
             _group = group;
+        }
+        inline group_t getGroup() const
+        {
+            return _group;
         }
         inline void decreaseAfterExecution(sentinel_access_type_counter* sentinel)
         {
@@ -402,15 +447,7 @@ class MiniRun
     }
     public:
 
-    inline void createTask(const task_fun_t&  async_fun, group_t group)
-    {
-        createTask(async_fun, {}, {}, group);
-    }
 
-    inline void createTask(const task_fun_t& async_fun)
-    {
-        createTask(async_fun, {}, {});
-    }
 
     std::set<Task*> _unfinished_tasks;
 
@@ -428,19 +465,12 @@ class MiniRun
         debugLock.unlock();
     }
 
-    inline void createTask(const task_fun_t& async_fun, const dep_list_t& in, const dep_list_t& out, group_t group = defaultGroup)
+
+
+    inline void registerTask(Task* task,  const dep_list_t& in, const dep_list_t& out)
     {
-
-        static bool minirun_disabled = std::getenv("DISABLE_MINIRUN")!=nullptr;
-        if(minirun_disabled)
-        {
-            async_fun();
-            return;
-        }
-
+        group_t group = task->getGroup();
         increaseRunningTasks(group);
-
-        Task* task = getPreallocatedTask()->prepare(async_fun, group);
         addUnfinished(task);
 
         groupLock(group);
@@ -449,7 +479,51 @@ class MiniRun
         groupUnlock(group);
 
         task->activate();
-        
+    }
+    
+
+
+    //CONSTRUCTORS FOR TASKS WITH SYNCHRONOUS FINALIZATION
+    
+    inline void createTask(const task_fun_t&  async_fun, group_t group)
+    {
+        createTask(async_fun, {}, {}, group);
+    }
+
+    inline void createTask(const task_fun_t& async_fun)
+    {
+        createTask(async_fun, {}, {});
+    }
+
+    inline void createTask(const task_fun_t& async_fun, const dep_list_t& in, const dep_list_t& out, group_t group = defaultGroup)
+    {
+        if(!_minirunDisabled)
+            return registerTask(getPreallocatedTask()->prepare(async_fun, group), in, out);
+        else async_fun();
+    }
+
+
+
+    //CONSTRUCTORS FOR TASKS WITH ASYNCHRONOUS FINALIZATIONS
+    
+    inline void createTask(const task_fun_t&  async_fun, const task_async_fin& async_fin, group_t group)
+    {
+        createTask(async_fun, async_fin, {}, {}, group);
+    }
+
+    inline void createTask(const task_fun_t& async_fun, const task_async_fin& async_fin)
+    {
+        createTask(async_fun, async_fin, {}, {});
+    }
+
+    inline void createTask(const task_fun_t& async_fun, const task_async_fin& async_fin,   const dep_list_t& in, const dep_list_t& out, group_t group = defaultGroup)
+    {
+        if(!_minirunDisabled) return registerTask(getPreallocatedTask()->prepare(async_fun, async_fin, group), in, out);
+        else
+        {
+            async_fun();
+            while(async_fin());
+        }
     }
 
     inline void taskwait(group_t group)
@@ -484,6 +558,7 @@ class MiniRun
     std::unordered_map<group_t, sentinel_map_type>         _sentinel_value_map;
     std::unordered_map<group_t, std::atomic<num_tasks_t> > _running_tasks;
     std::unordered_map<group_t, SpinLock>                  _group_lock;
+    bool _minirunDisabled = std::getenv("DISABLE_MINIRUN")!=nullptr;
 
     SpinLock debugLock;
 
