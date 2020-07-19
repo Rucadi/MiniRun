@@ -40,7 +40,10 @@ MiniRun::deps accepts any number of parameters, and if a pointer is passed, will
 
 ## GROUPS
 
-When creating a task, we can specify a **GROUP**,  each group in the runtime is indepdendent on each other, and we can decide to synchronize for an specific group or for all tasks indepdendently of the group.
+When creating a task, we can specify a **GROUP**,  each group in the runtime is indepdendent of each other in terms of dependencies.
+The only thing that they will share, are the threads.
+
+We can decide to do a synchronization for an specific group, if not, the default synchronization will be for all the groups.
 
 If no group is specified, 0 is used as group.
 
