@@ -73,6 +73,25 @@ Example of compilation and running with emscripten:
     em++ main.cpp -s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=8 -s TOTAL_MEMORY=2047mb
     node --experimental-wasm-threads --experimental-wasm-bulk-memory  ./a.out.js 
 
+# CUDA and Asynchronous Runtimes
+
+We can use MiniRun in conjuction with other runtimes and CUDA, this capability is allows a MiniRun task to have an asynchronous finalization, which means that, when creating a task,  the user can specify  a boolean function.
+
+This function has to check if the task has finished or not, returning TRUE if it has finished or FALSE if it hasn't.
+
+A working code sample can be seen in the CUDA sample,  
+	
+	[runtime_object].createTask(
+	[](){executeKernelInStream(data,3);}, //functionality that sends to execute an asynchronous task
+	[](){ return hasFinishedStream(3);}, //check if the task has finished
+		{}, //in dependences
+		MiniRun::deps(data)); //out dependences
+
+
+You must take into account that MiniRun tasks may not run in the same thread, so if the device needs to have a thread context (like cuda does), you must call cudaSetDevice(_id_device) or the specific for your application.
+
+With this capability, you can mix MiniRun tasks, CUDA tasks, or multiple other runtime tasks (like OpenMP) coherent at the same time.
+
 # EXAMPLES
   ## Basic example: Matmul block
 The example shows the case of a block of a matrix multiply which uses MiniRun:
