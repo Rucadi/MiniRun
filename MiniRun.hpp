@@ -44,11 +44,12 @@ class MiniRun
     struct Task;
 
     using task_fun_t        =  std::function<void()>;
-    using task_async_fin    =  std::function<bool()>;
-    using dep_t             =  uintptr_t;             //we track pointers, this is the size of a pointer type.
-    using dep_list_t        =  std::vector<dep_t>;    //enforcement of const&
-    using group_t           =  uint32_t;              //this decides the type of the groups, value 0 is reserved to default
-    using num_tasks_t       =  intptr_t;             //this limits the number of tasks that can be run at the same time
+    using task_fin_t        =  std::function<bool()>;
+    using task_fun_fin_t    =  std::function<task_fin_t()>; //To support an activator function that generates it's own asynchronous finalization
+    using dep_t             =  uintptr_t;                   //we track pointers, this is the size of a pointer type.
+    using dep_list_t        =  std::vector<dep_t>;          
+    using group_t           =  uint32_t;                    //this decides the type of the groups, value 0 is reserved to default
+    using num_tasks_t       =  intptr_t;                    //this limits the number of tasks that can be run at the same time
     using sentinel_map_type = std::unordered_map<uintptr_t, sentinel_access_type_counter>;//type of the map where we store the tracking
     static constexpr group_t defaultGroup = 0;
 
@@ -244,10 +245,12 @@ class MiniRun
         std::vector<sentinel_access_type_counter*> _decreaseInCounterAfterExecution;
         std::vector<sentinel_access_type_counter*> _processFinishOutAfterExecution;
 
+        task_fun_fin_t       _fun_fin;
         task_fun_t           _fun;
-        task_async_fin       _fin;
+        task_fin_t           _fin;
 
         bool                 _taskHasFinished;
+        bool                 _isFunFin;
         bool                 _isAwaitingForFinalization;
         bool                 _hasAsynchronousFinalization;
         num_tasks_t          _countdownToRelease;
@@ -271,6 +274,7 @@ class MiniRun
             _taskHasFinished = false;
             _hasAsynchronousFinalization = false;
             _isAwaitingForFinalization = false;
+            _isFunFin = false;
         }
 
         inline Task* prepare(const task_fun_t& async_fun, group_t group)
@@ -282,7 +286,7 @@ class MiniRun
             return this;
         }
 
-        inline Task* prepare(const task_fun_t& async_fun, const task_async_fin& async_fin,  group_t group)
+        inline Task* prepare(const task_fun_t& async_fun, const task_fin_t& async_fin,  group_t group)
         {
             reinitialize();
             _fun = std::move(async_fun);
@@ -292,6 +296,18 @@ class MiniRun
             increaseCountdown();
             return this;
         }
+
+        inline Task* prepare(const task_fun_fin_t& async_fun_fin,  group_t group)
+        {
+            reinitialize();
+            _fun_fin = std::move(async_fun_fin);
+            _hasAsynchronousFinalization = true;
+            _isFunFin = true;
+            _group = group;
+            increaseCountdown();
+            return this;
+        }
+
 
         inline void activate()
         {
@@ -317,7 +333,9 @@ class MiniRun
                 if(!_isAwaitingForFinalization)
                 {
                     _isAwaitingForFinalization = true;
-                    _fun();
+                    
+                    if(_isFunFin) _fin = std::move(_fun_fin());
+                    else _fun();
                 }
 
                 if(_fin()) finalizeTask();
@@ -442,12 +460,12 @@ class MiniRun
     
     inline void createTask(const task_fun_t&  async_fun, group_t group)
     {
-        createTask(async_fun, {}, {}, group);
+        createTask(async_fun, deps(), deps(), group);
     }
 
     inline void createTask(const task_fun_t& async_fun)
     {
-        createTask(async_fun, {}, {});
+        createTask(async_fun, deps(), deps());
     }
 
     inline void createTask(const task_fun_t& async_fun, const dep_list_t& in, const dep_list_t& out, group_t group = defaultGroup)
@@ -460,23 +478,45 @@ class MiniRun
 
     //CONSTRUCTORS FOR TASKS WITH ASYNCHRONOUS FINALIZATIONS
     
-    inline void createTask(const task_fun_t&  async_fun, const task_async_fin& async_fin, group_t group)
+    inline void createTask(const task_fun_t&  async_fun, const task_fin_t& async_fin, group_t group)
     {
-        createTask(async_fun, async_fin, {}, {}, group);
+        createTask(async_fun, async_fin, deps(), deps(), group);
     }
 
-    inline void createTask(const task_fun_t& async_fun, const task_async_fin& async_fin)
+    inline void createTask(const task_fun_t& async_fun, const task_fin_t& async_fin)
     {
-        createTask(async_fun, async_fin, {}, {});
+        createTask(async_fun, async_fin, deps(), deps());
     }
 
-    inline void createTask(const task_fun_t& async_fun, const task_async_fin& async_fin,   const dep_list_t& in, const dep_list_t& out, group_t group = defaultGroup)
+    inline void createTask(const task_fun_t& async_fun, const task_fin_t& async_fin,   const dep_list_t& in, const dep_list_t& out, group_t group = defaultGroup)
     {
-        if(!_minirunDisabled) return registerTask(getPreallocatedTask()->prepare(async_fun, async_fin, group), in, out);
+        if(!_minirunDisabled)  registerTask(getPreallocatedTask()->prepare(async_fun, async_fin, group), in, out);
         else
         {
             async_fun();
             while(async_fin());
+        }
+    }
+
+
+    //CONSTRUCTOR FOR TASKS WITH DYNAMIC ASYNCHRONOUS FINALIZATION
+    inline void createTask(const task_fun_fin_t& async_fun_fin, group_t group)
+    {
+       createTask(async_fun_fin, deps(), deps(), group);
+    } 
+    
+     inline void createTask(const task_fun_fin_t& async_fun_fin)
+    {
+       createTask(async_fun_fin, deps(), deps());
+    }
+
+    inline void createTask(const task_fun_fin_t& async_fun_fin,  const dep_list_t& in, const dep_list_t& out, group_t group = defaultGroup)
+    {
+        if(!_minirunDisabled)  registerTask(getPreallocatedTask()->prepare(async_fun_fin, group), in, out);
+        else
+        {
+            auto fin = std::move(async_fun_fin());
+            while(fin());
         }
     }
 
