@@ -52,6 +52,7 @@ class MiniRun
     using num_tasks_t       =  intptr_t;                    //this limits the number of tasks that can be run at the same time
     using sentinel_map_type = std::unordered_map<uintptr_t, sentinel_access_type_counter>;//type of the map where we store the tracking
     static constexpr group_t defaultGroup = 0;
+    static constexpr group_t maxGroup = (group_t) -1;
 
     class SpinLock 
     {
@@ -81,6 +82,7 @@ class MiniRun
         bool _alive;
         bool _minirunDisabled = std::getenv("DISABLE_MINIRUN")!=nullptr;
         std::queue<Task*>     _runnable_tasks;
+        std::vector<std::thread> _threads;
         SpinLock              _thread_pool_spinlock;
 
         inline void worker()
@@ -103,13 +105,8 @@ class MiniRun
        inline void spawnThreads(size_t number)
         {
             for(size_t i = 0; i < number; ++i)
-            {
-                std::thread thread([&]()
-                {
-                    while(_alive) worker();
-                });
-                thread.detach();
-            }
+                _threads.push_back(std::thread([&]{while(_alive) worker();}));
+            
         }
 
         public:
@@ -138,6 +135,7 @@ class MiniRun
         ~ThreadPool()
         {
             _alive = false;
+            for(auto& thread : _threads) thread.join();
         }
 
     };
@@ -316,7 +314,7 @@ class MiniRun
         inline void operator()()
         {
             
-            const auto finalizeTask =  [&](){
+            const auto finalizeTask =  [&]{
                 onFinish();
                 _targetRuntime.releaseTask(this);
                 _targetRuntime.decreaseRunningTasks(_group);
@@ -334,7 +332,7 @@ class MiniRun
                 {
                     _isAwaitingForFinalization = true;
                     
-                    if(_isFunFin) _fin = std::move(_fun_fin());
+                    if(_isFunFin) _fin = _fun_fin();
                     else _fun();
                 }
 
@@ -407,17 +405,23 @@ class MiniRun
 
 
 
-    inline  sentinel_map_type& getSentinelMapForGroup(group_t group)
+    inline  std::pair<SpinLock, sentinel_map_type>& getSentinelPairForGroup(group_t group)
     {
-        lock_guard guard(_structure_locks[2]);            
-        sentinel_map_type* svm= &_sentinel_value_map[group];
-        return *svm;
+        lock_guard guard(_sentinel_map_group_lock);            
+        return _sentinel_value_map[group];
     }
 
+    inline sentinel_access_type_counter& getSentinelForGroup(dep_t sentinel, group_t group)
+    {
+        auto& map = getSentinelPairForGroup(group);
+        lock_guard guard(map.first);
+        return map.second[sentinel];
+
+    }
 
     inline std::atomic<num_tasks_t>& getGroupRunningTasksCounter(group_t group)
     {
-        lock_guard guard(_structure_locks[1]);            
+        lock_guard guard(_running_tasks_group_lock);            
         std::atomic<num_tasks_t>& ref = *(&_running_tasks[group]);
         return ref;
     }
@@ -425,14 +429,14 @@ class MiniRun
     inline void increaseRunningTasks(group_t group)
     {
         _global_running_tasks++;
-        lock_guard guard(_structure_locks[1]);            
+        lock_guard guard(_running_tasks_group_lock);            
         _running_tasks[group]++;
     }
 
     inline void decreaseRunningTasks(group_t group)
     {
         _global_running_tasks--;
-        lock_guard guard(_structure_locks[1]);            
+        lock_guard guard(_running_tasks_group_lock);            
         _running_tasks[group]--;
     } 
 
@@ -445,14 +449,12 @@ class MiniRun
     inline void registerTask(Task* task,  const dep_list_t& in, const dep_list_t& out)
     {
         group_t group = task->getGroup();
+       
         increaseRunningTasks(group);
 
-        {
-            lock_guard guard(_structure_locks[0]);            
-            for(const uintptr_t i : in) getSentinelMapForGroup(group)[i].addTaskDep(task,true);
-            for(const uintptr_t i : out) getSentinelMapForGroup(group)[i].addTaskDep(task,false); 
-        }
-
+        for(const uintptr_t i : in) getSentinelForGroup(i, group).addTaskDep(task,true);
+        for(const uintptr_t i : out) getSentinelForGroup(i, group).addTaskDep(task,false); 
+        
         task->activate();
     }
     
@@ -498,7 +500,6 @@ class MiniRun
         }
     }
 
-
     //CONSTRUCTOR FOR TASKS WITH DYNAMIC ASYNCHRONOUS FINALIZATION
     inline void createTask(const task_fun_fin_t& async_fun_fin, group_t group)
     {
@@ -515,7 +516,7 @@ class MiniRun
         if(!_minirunDisabled)  registerTask(getPreallocatedTask()->prepare(async_fun_fin, group), in, out);
         else
         {
-            auto fin = std::move(async_fun_fin());
+            auto fin = async_fun_fin();
             while(fin());
         }
     }
@@ -536,6 +537,27 @@ class MiniRun
         
     }
 
+    template<typename T, typename ActionFunction>
+    inline void parallel_for_each(std::iterator<T, std::input_iterator_tag> begin, std::iterator<T, std::input_iterator_tag>  end, const ActionFunction fun, group_t group = maxGroup)
+    {
+        while(begin != end) 
+        {
+            T& value = *begin;
+            createTask([=]{fun(value);},group);
+            ++begin;
+        }
+
+        if(group == maxGroup) taskwait(maxGroup);
+    }
+
+    template <typename T, typename ActionFunction>
+    inline void parallel_for(T b, T e, const ActionFunction& fun, group_t group = maxGroup)
+    {
+        for(; b<=e; ++b)
+            createTask([=]{fun(b);}, group);
+
+        if(group == maxGroup) taskwait(maxGroup);
+    }
 
     public:
     template<typename... T> static dep_list_t deps(const T&... params) { return {(uintptr_t) std::is_pointer<T>::value?(uintptr_t)params:(uintptr_t)&params...}; }
@@ -547,9 +569,9 @@ class MiniRun
     private:     
     
     ThreadPool _pool;
-    SpinLock _structure_locks[3];
+    SpinLock _sentinel_map_group_lock, _running_tasks_group_lock;
     std::atomic<num_tasks_t>                               _global_running_tasks;
-    std::unordered_map<group_t, sentinel_map_type>         _sentinel_value_map;
+    std::unordered_map<group_t, std::pair<SpinLock, sentinel_map_type>>  _sentinel_value_map;
     std::unordered_map<group_t, std::atomic<num_tasks_t> > _running_tasks;
     std::unordered_map<group_t, SpinLock>                  _group_lock;
     bool _minirunDisabled = std::getenv("DISABLE_MINIRUN")!=nullptr;
