@@ -23,7 +23,8 @@ SOFTWARE.
 
 */
 #pragma once
-
+#include <iostream>
+#include <algorithm>
 #include <type_traits>
 #include <thread>
 #include <functional>
@@ -549,6 +550,40 @@ class MiniRun
         if(group == maxGroup) taskwait(maxGroup);
     }
 
+
+    template <typename  T, typename ActionFunction>
+    inline void parallel_for_each(T& container, const ActionFunction& fun, group_t group = maxGroup)
+    {
+        for(auto& value : container) 
+            createTask([fun, value = &value]{fun(*value);}, maxGroup);
+
+        if(group == maxGroup) taskwait(maxGroup);
+    }
+
+
+    template <typename  T, typename ActionFunction>
+    inline void parallel_for_each(T& container, size_t stepSize,  const ActionFunction& fun, group_t group = maxGroup)
+    {
+
+        size_t containerSize = container.size();
+        size_t blockNum      = containerSize/stepSize;
+        size_t rest          = containerSize%stepSize;
+
+        for(int i = 0; i < blockNum; ++i)
+            createTask([cp = &container, idx=i*stepSize, size = stepSize, fun]
+            {
+                std::for_each(std::begin(*cp)+idx, std::begin(*cp)+(idx+size),fun);
+            }, group);
+
+        if(rest!=0)
+            createTask([cp = &container, idx=blockNum*stepSize, size = rest, fun]
+            {
+                std::for_each(std::begin(*cp)+idx, std::begin(*cp)+(idx+size),fun);
+            }, group);
+        
+        if(group == maxGroup) taskwait(maxGroup);
+    }
+
     template <typename T, typename ActionFunction>
     inline void parallel_for(T b, T e, const ActionFunction& fun, group_t group = maxGroup)
     {
@@ -558,12 +593,18 @@ class MiniRun
         if(group == maxGroup) taskwait(maxGroup);
     }
 
-    template <typename  T, typename ActionFunction>
-    inline void parallel_for_each(T& container, const ActionFunction& fun, group_t group = maxGroup)
+    template <typename T, typename ActionFunction>
+    inline void parallel_for(T b, T e, size_t stepSize, const ActionFunction& fun, group_t group = maxGroup)
     {
-        for(auto& value : container) 
-            createTask([fun, value = &value]{fun(*value);}, maxGroup);
+        for(; b<=e; b+=stepSize)
+            createTask([=]{ for(size_t i = 0; i < stepSize; ++i) fun(b+i);}, group);
+        if(b>e)
+        {
+            b = e-b;
+            createTask([=, stepSize = b]{ for(size_t i = 0; i < stepSize; ++i) fun(b+i);}, group);
 
+        }
+        
         if(group == maxGroup) taskwait(maxGroup);
     }
     public:
