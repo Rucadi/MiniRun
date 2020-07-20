@@ -85,8 +85,8 @@ This function has to check if the task has finished or not, returning TRUE if it
 A working code sample can be seen in the CUDA sample,  
 	
 	[runtime_object].createTask(
-	[](){executeKernelInStream(data,3);}, //functionality that sends to execute an asynchronous task
-	[](){ return hasFinishedStream(3);}, //check if the task has finished
+	[]{executeKernelInStream(data,3);}, //functionality that sends to execute an asynchronous task
+	[]{ return hasFinishedStream(3);}, //check if the task has finished
 		{}, //in dependences
 		MiniRun::deps(data)); //out dependences
 
@@ -103,13 +103,12 @@ The example shows the case of a block of a matrix multiply which uses MiniRun:
 	void matmul(MiniRun& runtime, const size_t size, const matrix_type *a, const matrix_type *b,  matrix_type *c)
 	{
 	    runtime.createTask(
-		[=]()
-		{
+		[=]{
 		    for(size_t k=0; k < size; ++k)
 			for(size_t i=0; i < size; ++i)
 			 for(size_t j=0; j < size; ++j)
 			    c[i*size + j] += a[i*size + k] * b[k*size + j];
-		}, MiniRun::deps(a,b), MiniRun::deps(c));
+		   }, MiniRun::deps(a,b), MiniRun::deps(c));
 	}
 
 	
@@ -124,8 +123,8 @@ The example shows the case of a block of a matrix multiply which uses MiniRun:
         if (n<2) return  n;   
         int  i,j;
 	    int  a_group = group++;
-	    run.createTask([&, n = n-1](){ i=fib(n); },a_group);
-	    run.createTask([&, n = n-2](){ j=fib(n); },a_group);
+	    run.createTask([&, n = n-1]{ i=fib(n); },a_group);
+	    run.createTask([&, n = n-2]{ j=fib(n); },a_group);
 	    run.taskwait(a_group);
 	    return  i+j;
     }
