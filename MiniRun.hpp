@@ -454,7 +454,7 @@ class MiniRun
 
         for(const uintptr_t i : in) getSentinelForGroup(i, group).addTaskDep(task,true);
         for(const uintptr_t i : out) getSentinelForGroup(i, group).addTaskDep(task,false); 
-        
+
         task->activate();
     }
     
@@ -537,13 +537,12 @@ class MiniRun
         
     }
 
-    template<typename T, typename ActionFunction>
-    inline void parallel_for_each(std::iterator<T, std::input_iterator_tag> begin, std::iterator<T, std::input_iterator_tag>  end, const ActionFunction fun, group_t group = maxGroup)
+    template<typename T, typename ActionFunction>//In c++20 should use concepts..
+    inline void parallel_for_each(T  begin, T end, const ActionFunction& fun, group_t group = maxGroup)
     {
         while(begin != end) 
         {
-            T& value = *begin;
-            createTask([=]{fun(value);},group);
+            createTask([fun, value = &(*begin)]{fun(*value);},group);
             ++begin;
         }
 
@@ -559,6 +558,14 @@ class MiniRun
         if(group == maxGroup) taskwait(maxGroup);
     }
 
+    template <typename  T, typename ActionFunction>
+    inline void parallel_for_each(T& container, const ActionFunction& fun, group_t group = maxGroup)
+    {
+        for(auto& value : container) 
+            createTask([fun, value = &value]{fun(*value);}, maxGroup);
+
+        if(group == maxGroup) taskwait(maxGroup);
+    }
     public:
     template<typename... T> static dep_list_t deps(const T&... params) { return {(uintptr_t) std::is_pointer<T>::value?(uintptr_t)params:(uintptr_t)&params...}; }
     MiniRun() :_pool(), _global_running_tasks(0) {}
