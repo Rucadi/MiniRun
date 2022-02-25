@@ -35,6 +35,7 @@ SOFTWARE.
 #include <csignal>
 #include <mutex>
 #include <cassert>
+#include <string.h>
 
 class MiniRun
 {
