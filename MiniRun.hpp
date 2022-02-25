@@ -55,6 +55,23 @@ class MiniRun
     static constexpr group_t defaultGroup = 0;
     static constexpr group_t maxGroup = (group_t)-1;
 
+    #if !defined(getenv_s)
+    static void getenv_s(size_t* size,char*  value, size_t valuesz,const char*  name)
+    {
+        char* envvalue = getenv(name);
+        if(envvalue == nullptr)
+        {
+            *size = 0;
+            if(valuesz>1 && value != nullptr) *value = '\0';
+        }
+        else 
+        {
+            *size = strlen(envvalue);
+            if(valuesz>*size && value!=nullptr) strcpy(value,envvalue);
+        }
+    }
+    #endif
+    
 
     static bool minirunDisabled()
     {
