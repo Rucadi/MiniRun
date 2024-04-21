@@ -60,8 +60,8 @@ A taskwait is the synchronization point, which will block the execution of the t
 
 In MiniRun, we have two taskwait constructs, 
  
-    [runtime_object].createTask(); 
-    [runtime_object].createTask([GROUP]); 
+    [runtime_object].taskwait(); 
+    [runtime_object].taskwait([GROUP]); 
 
 The first one, will wait until the execution of all the tasks, and the second one, will wait until the execution of all the group tasks.
 
